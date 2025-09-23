@@ -32,7 +32,7 @@ http {
             {{ end }}
             {{ end }}
             
-            sub_filter '</head>' '<script>window.BANNER_MESSAGE="{{env "BANNER_MESSAGE"}}";window.BANNER_COLOR="{{env "BANNER_COLOR"}}";</script><script src="/banner.js"></script></head>';
+            sub_filter '</head>' '<script>window.BANNER_MESSAGE="${BANNER_MESSAGE}";window.BANNER_COLOR="${BANNER_COLOR}";</script><script src="/banner.js"></script></head>';
             sub_filter_once on;
             sub_filter_types text/html;
             
