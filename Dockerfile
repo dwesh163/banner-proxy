@@ -10,7 +10,13 @@ RUN set -e -x; apk add libcap-setcap; \
     setcap -r /nginx-ingress-controller; \
     rm -rf /var/cache/apk/*
 
-ENTRYPOINT /nginx-ingress-controller
+RUN addgroup -g 1001 nginx && \
+    adduser -u 1001 -G nginx -s /bin/sh -D nginx && \
+    chown -R nginx:nginx /tmp/nginx /etc/nginx /etc/ingress-controller /var/run/openresty
+
+USER 1001
+
+ENTRYPOINT ["/nginx-ingress-controller", "--http-port=8080", "--https-port=8443"]
 
 COPY --from=ingress /etc/nginx/nginx.conf /etc/nginx/nginx.conf
 RUN chown root:root /etc/nginx/nginx.conf
