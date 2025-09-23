@@ -25,10 +25,11 @@ http {
         server_name {{ $server.Hostname }} {{ range $server.Aliases }}{{ . }} {{ end }};
         
         location / {
+            {{ if $server.Locations }}
             {{ range $location := $server.Locations }}
-            {{ $upstream := $location.Upstream }}
-            {{ if $upstream }}
-            proxy_pass http://{{ $upstream.Name }};
+            {{ if $location.Backend }}
+            proxy_pass http://{{ $location.Backend }};
+            {{ end }}
             {{ end }}
             {{ end }}
             
