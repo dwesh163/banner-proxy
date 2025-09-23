@@ -14,6 +14,7 @@ COPY --from=ingress /etc/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY --from=ingress /etc/nginx/lua /etc/nginx/lua
 
 RUN mkdir -p /tmp/nginx /etc/ingress-controller /etc/ingress-controller/telemetry /etc/nginx/static
+COPY --from=ingress /etc/nginx/mime.types /etc/nginx/mime.types
 
 RUN chmod 1777 /tmp/nginx/ \
     /etc/nginx/ \
