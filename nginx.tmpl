@@ -6,6 +6,10 @@ daemon off;
 http {
     include /etc/nginx/mime.types;
     client_max_body_size 50M;
+    
+    upstream upstream-default-backend {
+        server 127.0.0.1:8080;
+    }
 
     server {
         listen 127.0.0.1:{{ .StatusPort }};
@@ -35,7 +39,6 @@ http {
             
             sub_filter '</head>' '<script>window.BANNER_MESSAGE="${BANNER_MESSAGE}";window.BANNER_COLOR="${BANNER_COLOR}";</script><script src="/banner.js"></script></head>';
             sub_filter_once on;
-            sub_filter_types text/html;
             
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
