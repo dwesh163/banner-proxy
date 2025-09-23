@@ -94,9 +94,6 @@ http {
     }
 
     {{ range $server := $servers }}
-    {{ $ing := (getIngressInformation (index $server.Locations 0).Ingress $server.Hostname (index $server.Locations 0).IngressPath) }}
-    {{ $proxyManaged := (index $ing.Annotations "proxy/managed") }}
-    {{ if eq $proxyManaged (printf "env.%s" (env "PROXY_NAME")) }}
     server {
         server_name {{ buildServerName $server.Hostname }} {{range $server.Aliases }}{{ . }} {{ end }};
         
@@ -110,7 +107,7 @@ http {
             {{ end }}
             
             # Inject banner script
-            sub_filter '</head>' '<script>window.PROXY_NAME="{{env "PROXY_NAME"}}";window.BANNER_MESSAGE="{{env "BANNER_MESSAGE"}}";window.BANNER_COLOR="{{env "BANNER_COLOR"}}";</script><script src="/banner.js"></script></head>';
+            sub_filter '</head>' '<script>window.BANNER_MESSAGE="{{env "BANNER_MESSAGE"}}";window.BANNER_COLOR="{{env "BANNER_COLOR"}}";</script><script src="/banner.js"></script></head>';
             sub_filter_once on;
             sub_filter_types text/html;
             
@@ -127,6 +124,5 @@ http {
             add_header Cache-Control "no-cache, no-store, must-revalidate";
         }
     }
-    {{ end }}
     {{ end }}
 }
