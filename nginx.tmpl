@@ -3,6 +3,9 @@ error_log stderr;
 events {}
 daemon off;
 
+env BANNER_MESSAGE;
+env BANNER_COLOR;
+
 http {
     include /etc/nginx/mime.types;
     client_max_body_size 50M;
@@ -28,6 +31,9 @@ http {
     server {
         server_name {{ $server.Hostname }} {{ range $server.Aliases }}{{ . }} {{ end }};
         
+        set_by_lua_block $banner_message { return os.getenv("BANNER_MESSAGE") or "Welcome! This is a banner." }
+        set_by_lua_block $banner_color { return os.getenv("BANNER_COLOR") or "#d97706" }
+        
         location / {
             {{ if $server.Locations }}
             {{ range $location := $server.Locations }}
@@ -37,7 +43,7 @@ http {
             {{ end }}
             {{ end }}
             
-            sub_filter '</head>' '<script>window.BANNER_MESSAGE="${BANNER_MESSAGE}";window.BANNER_COLOR="${BANNER_COLOR}";</script><script src="/banner.js"></script></head>';
+            sub_filter '</head>' '<script>window.BANNER_MESSAGE="$banner_message";window.BANNER_COLOR="$banner_color";</script><script src="/banner.js"></script></head>';
             sub_filter_once on;
             
             proxy_set_header Host $host;
