@@ -1,0 +1,132 @@
+{{ $all := . }}
+{{ $servers := .Servers }}
+{{ $cfg := .Cfg }}
+{{ $IsIPV6Enabled := .IsIPV6Enabled }}
+{{ $healthzURI := .HealthzURI }}
+{{ $backends := .Backends }}
+{{ $proxyHeaders := .ProxySetHeaders }}
+{{ $addHeaders := .AddHeaders }}
+
+pid {{ .PID }};
+error_log stderr;
+events {}
+daemon off;
+
+http {
+    include /etc/nginx/mime.types;
+    types {
+        application/yaml  yaml yml;
+    }
+
+    client_body_temp_path /tmp/nginx/client_body;
+    proxy_temp_path       /tmp/nginx/proxy;
+    fastcgi_temp_path     /tmp/nginx/fastcgi;
+    uwsgi_temp_path       /tmp/nginx/uwsgi;
+    scgi_temp_path        /tmp/nginx/scgi;
+    client_max_body_size  50M;
+
+    lua_package_path "/etc/nginx/lua/?.lua;;";
+
+    init_by_lua_block {
+        collectgarbage("collect")
+        local ok, res
+        ok, res = pcall(require, "configuration")
+        if not ok then
+            error("require failed: " .. tostring(res))
+        else
+            configuration = res
+            configuration.prohibited_localhost_port = '{{ .StatusPort }}'
+        end
+    }
+
+    server {
+        listen 127.0.0.1:{{ .StatusPort }};
+        set $proxy_upstream_name "internal";
+        keepalive_timeout 0;
+        gzip off;
+        access_log off;
+
+        location /healthz {
+            return 200;
+        }
+
+        location /nginx_status {
+            stub_status on;
+        }
+
+        location /configuration {
+            client_max_body_size 21M;
+            client_body_buffer_size 21M;
+            proxy_buffering off;
+            content_by_lua_block {
+                configuration.call()
+            }
+        }
+
+        location / {
+            content_by_lua_block {
+                ngx.exit(ngx.HTTP_NOT_FOUND)
+            }
+        }
+    }
+
+    server {
+        listen 9145;
+        location /metrics {
+            content_by_lua_block {
+                ngx.say("# HELP nginx_up nginx status")
+                ngx.say("# TYPE nginx_up gauge")
+                ngx.say("nginx_up 1")
+            }
+        }
+    }
+
+    # Banner script server
+    server {
+        listen 80;
+        server_name banner-script;
+        
+        location /banner.js {
+            root /etc/nginx/static;
+            add_header Content-Type "application/javascript";
+            add_header Cache-Control "no-cache, no-store, must-revalidate";
+        }
+    }
+
+    {{ range $server := $servers }}
+    {{ $ing := (getIngressInformation (index $server.Locations 0).Ingress $server.Hostname (index $server.Locations 0).IngressPath) }}
+    {{ $proxyManaged := (index $ing.Annotations "proxy/managed") }}
+    {{ if eq $proxyManaged (printf "env.%s" (env "PROXY_NAME")) }}
+    server {
+        server_name {{ buildServerName $server.Hostname }} {{range $server.Aliases }}{{ . }} {{ end }};
+        
+        # Inject banner script into HTML responses
+        location / {
+            {{ range $location := $server.Locations }}
+            {{ $backend := (getBackendByLocationPath $backends $location.Path) }}
+            {{ if $backend }}
+            proxy_pass http://{{ $backend.Name }};
+            {{ end }}
+            {{ end }}
+            
+            # Inject banner script
+            sub_filter '</head>' '<script>window.PROXY_NAME="{{env "PROXY_NAME"}}";window.BANNER_MESSAGE="{{env "BANNER_MESSAGE"}}";window.BANNER_COLOR="{{env "BANNER_COLOR"}}";</script><script src="/banner.js"></script></head>';
+            sub_filter_once on;
+            sub_filter_types text/html;
+            
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # Serve banner script
+        location /banner.js {
+            root /etc/nginx/static;
+            add_header Content-Type "application/javascript";
+            add_header Cache-Control "no-cache, no-store, must-revalidate";
+        }
+    }
+    {{ end }}
+    {{ end }}
+}
