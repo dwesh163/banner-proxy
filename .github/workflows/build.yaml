@@ -1,0 +1,223 @@
+name: Build and Release
+on:
+    push:
+        branches: [main]
+
+env:
+  REGISTRY: 'ghcr.io'
+  REPOSITORY: ${{ github.repository }}
+  REGISTRY_PATH: 'ghcr.io/${{ github.repository }}'
+
+jobs:
+  detect-version:
+    name: Detect Version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      should_build: ${{ steps.check_version.outputs.should_build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get Version from Git tag
+        id: get_version
+        run: |
+            # Get the latest tag (v1.2.3 format)
+            VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0")
+            # Remove 'v' prefix if present
+            VERSION=${VERSION#v}
+            echo "Version from git tag: $VERSION"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if release exists and version changed
+        id: check_version
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          TAG_NAME="v$VERSION"
+          
+          # Check if release exists
+          set +e
+          gh release view "$TAG_NAME" >/dev/null 2>&1
+          RELEASE_EXISTS=$?
+          set -e
+          
+          # Check if version changed in last commit (only for push events)
+          VERSION_CHANGED=false
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if git show --name-only HEAD | grep -q "setup.py"; then
+              VERSION_CHANGED=true
+              echo "🔄 setup.py was modified in this commit"
+            fi
+          else
+            # For workflow_run events, always check if build is needed
+            VERSION_CHANGED=true
+          fi
+          
+          if [ $RELEASE_EXISTS -eq 0 ] && [ "$VERSION_CHANGED" = "false" ]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "✅ Release $TAG_NAME exists and no version change - skipping build"
+          elif [ $RELEASE_EXISTS -eq 0 ] && [ "$VERSION_CHANGED" = "true" ]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Release $TAG_NAME exists but version was changed - manual intervention needed"
+          else
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "🆕 Release $TAG_NAME doesn't exist - build needed"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-push:
+    name: Build and Push
+    needs: [detect-version]
+    if: needs.detect-version.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ needs.detect-version.outputs.version }}
+      build_success: ${{ steps.build_result.outputs.success }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Info
+        run: |
+          echo "🚀 Starting build for version: ${{ needs.detect-version.outputs.version }}"
+          echo "📅 Build triggered at: $(date)"
+          echo "🐳 Target registry: ${{ env.REGISTRY }}"
+          echo "📦 Repository: ${{ env.REPOSITORY }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_PATH }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ needs.detect-version.outputs.version }}
+
+      - name: Build and push Docker image
+        id: build_push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify Build Success
+        id: build_result
+        run: |
+          VERSION="${{ needs.detect-version.outputs.version }}"
+          echo "✅ Build and push completed!"
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "🐳 Image available at: ${{ env.REGISTRY_PATH }}:$VERSION"
+          echo "🐳 Latest image: ${{ env.REGISTRY_PATH }}:latest"
+
+  create-release:
+    name: Create Release
+    needs: [detect-version, build-and-push]
+    if: needs.detect-version.outputs.should_build == 'true' && needs.build-and-push.outputs.build_success == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Release Notes
+        id: generate_notes
+        run: |
+          VERSION="${{ needs.detect-version.outputs.version }}"
+          
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          touch release_notes.txt
+
+          if [ -z "$LAST_TAG" ]; then
+            COMMITS_COUNT=$(git rev-list HEAD --count)
+            AUTHORS=$(git log --pretty=format:"%an" | sort -u | sed 's/.*$/`&`/' | paste -sd ',' | sed 's/,/, /g')
+            COMMITS=$(git log --oneline -10 --pretty=format:"%h %s")
+            echo "Release v$VERSION with $COMMITS_COUNT commits by $AUTHORS." >> release_notes.txt
+          else
+            COMMITS_COUNT=$(git rev-list ${LAST_TAG}..HEAD --count)
+            AUTHORS=$(git log ${LAST_TAG}..HEAD --pretty=format:"%an" | sort -u | sed 's/.*$/`&`/' | paste -sd ',' | sed 's/,/, /g')
+            COMMITS=$(git log --oneline ${LAST_TAG}..HEAD --pretty=format:"%h %s")
+            echo "Release v$VERSION includes $COMMITS_COUNT commits since $LAST_TAG by $AUTHORS." >> release_notes.txt
+          fi
+
+          FEATURE_COMMITS=$(echo "$COMMITS" | grep -iE "\[(add|feat|feature)\]" | sed 's/^/- /' || echo "")
+          if [ -n "$FEATURE_COMMITS" ]; then
+            echo "### ✨ Features" >> release_notes.txt
+            echo "$FEATURE_COMMITS" >> release_notes.txt
+            echo "" >> release_notes.txt
+          fi
+          
+          FIX_COMMITS=$(echo "$COMMITS" | grep -iE "\[(fix|bugfix|hotfix)\]" | sed 's/^/- /' || echo "")
+          if [ -n "$FIX_COMMITS" ]; then
+            echo "### 🐛 Bug Fixes" >> release_notes.txt
+            echo "$FIX_COMMITS" >> release_notes.txt
+            echo "" >> release_notes.txt
+          fi
+          
+          MAINTENANCE_COMMITS=$(echo "$COMMITS" | grep -iE "\[(version|refactor|chore|style|perf|update|improve)\]" | sed 's/^/- /' || echo "")
+          if [ -n "$MAINTENANCE_COMMITS" ]; then
+            echo "### 🔧 Maintenance" >> release_notes.txt
+            echo "$MAINTENANCE_COMMITS" >> release_notes.txt
+            echo "" >> release_notes.txt
+          fi
+          
+          DOC_COMMITS=$(echo "$COMMITS" | grep -iE "\[(docs|doc|documentation)\]" | sed 's/^/- /' || echo "")
+          if [ -n "$DOC_COMMITS" ]; then
+            echo "### 📚 Documentation" >> release_notes.txt
+            echo "$DOC_COMMITS" >> release_notes.txt
+            echo "" >> release_notes.txt
+          fi
+
+          OTHER_COMMITS=$(echo "$COMMITS" | grep -viE "\[(add|feat|feature|fix|bugfix|hotfix|version|refactor|chore|style|perf|update|improve|docs|doc|documentation)\]" | sed 's/^/- /' || echo "")
+          if [ -n "$OTHER_COMMITS" ]; then
+            echo "### 🔄 Other Changes" >> release_notes.txt
+            echo "$OTHER_COMMITS" >> release_notes.txt
+          fi
+
+      - name: Create Release
+        run: |
+          VERSION="${{ needs.detect-version.outputs.version }}"
+          TAG_NAME="v$VERSION"
+          RELEASE_TITLE="v$VERSION"
+          
+          if ! gh release create "$TAG_NAME" \
+            --title "$RELEASE_TITLE" \
+            --notes-file release_notes.txt \
+            --latest; then
+            if gh release view "$TAG_NAME" &>/dev/null; then
+              echo "✅ Release $TAG_NAME already exists, treating as success"
+              exit 0
+            else
+              echo "❌ Failed to create release and release doesn't exist"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Release created successfully"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
