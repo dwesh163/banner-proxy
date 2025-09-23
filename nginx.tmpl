@@ -10,6 +10,12 @@ http {
     include /etc/nginx/mime.types;
     client_max_body_size 50M;
     
+    client_body_temp_path /tmp/nginx/client_body_temp;
+    proxy_temp_path /tmp/nginx/proxy_temp;
+    fastcgi_temp_path /tmp/nginx/fastcgi_temp;
+    uwsgi_temp_path /tmp/nginx/uwsgi_temp;
+    scgi_temp_path /tmp/nginx/scgi_temp;
+    
     upstream upstream-default-backend {
         server 127.0.0.1:8080;
     }
