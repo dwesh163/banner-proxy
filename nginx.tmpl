@@ -27,6 +27,23 @@ http {
         server 127.0.0.1:8080;
     }
 
+    lua_package_path "/etc/nginx/lua/?.lua;;";
+
+    lua_shared_dict certificate_data 20M;
+    lua_shared_dict certificate_servers 5M;
+    lua_shared_dict configuration_data 20M;
+
+    init_by_lua_block {
+        collectgarbage("collect")
+        local ok, res = pcall(require, "configuration")
+        if not ok then
+            error("require failed: " .. tostring(res))
+        else
+            configuration = res
+            configuration.prohibited_localhost_port = '{{ .StatusPort }}'
+        end
+    }
+
     server {
         listen 127.0.0.1:{{ .StatusPort }};
         set $proxy_upstream_name "internal";
