@@ -1,62 +1,98 @@
+{{ $all := . }}
+{{ $servers := .Servers }}
+{{ $cfg := .Cfg }}
+{{ $IsIPV6Enabled := .IsIPV6Enabled }}
+{{ $healthzURI := .HealthzURI }}
+{{ $backends := .Backends }}
+{{ $proxyHeaders := .ProxySetHeaders }}
+{{ $addHeaders := .AddHeaders }}
+
 pid {{ .PID }};
 error_log stderr;
 events {}
 daemon off;
-
 env BANNER_MESSAGE;
 env BANNER_COLOR;
 
 http {
     include /etc/nginx/mime.types;
+    client_body_temp_path /tmp/nginx/client_body;
+    proxy_temp_path /tmp/nginx/proxy;
+    fastcgi_temp_path /tmp/nginx/fastcgi;
+    uwsgi_temp_path /tmp/nginx/uwsgi;
+    scgi_temp_path /tmp/nginx/scgi;
     client_max_body_size 50M;
-    
-    client_body_temp_path /tmp/nginx/client_body_temp;
-    proxy_temp_path /tmp/nginx/proxy_temp;
-    fastcgi_temp_path /tmp/nginx/fastcgi_temp;
-    uwsgi_temp_path /tmp/nginx/uwsgi_temp;
-    scgi_temp_path /tmp/nginx/scgi_temp;
-    
+
     upstream upstream-default-backend {
         server 127.0.0.1:8080;
     }
 
     server {
         listen 127.0.0.1:{{ .StatusPort }};
+        set $proxy_upstream_name "internal";
+        keepalive_timeout 0;
+        gzip off;
+        access_log off;
+
         location /healthz {
             return 200;
         }
+
         location /nginx_status {
             stub_status on;
         }
+
+        location /configuration {
+            client_max_body_size 21M;
+            client_body_buffer_size 21M;
+            proxy_buffering off;
+            content_by_lua_block {
+                configuration.call()
+            }
+        }
+
         location / {
-            return 404;
+            content_by_lua_block {
+                ngx.exit(ngx.HTTP_NOT_FOUND)
+            }
         }
     }
 
-    {{ range $server := .Servers }}
+    {{ range $server := $servers }}
     server {
         server_name {{ $server.Hostname }} {{ range $server.Aliases }}{{ . }} {{ end }};
         
         set_by_lua_block $banner_message { return os.getenv("BANNER_MESSAGE") or "Welcome! This is a banner." }
-        set_by_lua_block $banner_color { return os.getenv("BANNER_COLOR") or "#d97706" }
-        
-        location / {
-            {{ if $server.Locations }}
-            {{ range $location := $server.Locations }}
-            {{ if $location.Backend }}
-            proxy_pass http://{{ $location.Backend }};
-            {{ end }}
-            {{ end }}
-            {{ end }}
+        set_by_lua_block $banner_color { return os.getenv("BANNER_COLOR") or "#ff0000ff" }
+
+        {{ range $location := $server.Locations }}
+        ####################### START LOCATION #######################
+        {{ $path := buildLocation $location false }}
+			
+        # ------------------------------------------------------------- #
+        {{ $ing := (getIngressInformation $location.Ingress $server.Hostname $location.IngressPath) }}
+            # Namespace      : {{ $ing.Namespace | quote}};
+            # Ingress name   : {{ $ing.Rule | quote }};
+            # Service name   : {{ $ing.Service | quote }};
+            # Service port   : {{ $ing.ServicePort | quote }};
+            # Location path  : {{ $ing.Path | escapeLiteralDollar | quote }};
+            # Ingress path   : {{ $location.IngressPath | quote }};
+
+        # ------------------------------------------------------------- #
             
+        location {{ $path }} {
+            {{ $location.ConfigurationSnippet }}
             sub_filter '</head>' '<script>window.BANNER_MESSAGE="$banner_message";window.BANNER_COLOR="$banner_color";</script><script src="/banner.js"></script></head>';
             sub_filter_once on;
-            
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
         }
+        {{ end }}
+        ######################## END LOCATION ########################
+
+        {{ $server.ServerSnippet }}
 
         location /banner.js {
             root /etc/nginx/static;
@@ -64,4 +100,25 @@ http {
         }
     }
     {{ end }}
+}
+
+stream {
+    server {
+        listen 127.0.0.1:{{ .StreamPort }};
+        access_log off;
+        content_by_lua_block {
+            local sock, err = ngx.req.socket(true)
+            if not sock then
+                ngx.log(ngx.ERR, "failed to get raw req socket: ", err)
+                ngx.say("error: ", err)
+            else
+                local reader = sock:receiveuntil("\r\n")
+                local data, err_read = reader()
+                if err_read then
+                    ngx.log(ngx.ERR, "could not read TCP/UDP dynamic-configuration:", err_read)
+                    ngx.say("error: ", err_read)
+                end
+            end
+        }
+    }
 }
