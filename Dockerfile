@@ -10,11 +10,16 @@ RUN set -e -x; apk add libcap-setcap; \
     setcap -r /nginx-ingress-controller; \
     rm -rf /var/cache/apk/*
 
+ENTRYPOINT ["/nginx-ingress-controller", "--http-port=8080", "--https-port=8443"]
+
 COPY --from=ingress /etc/nginx/nginx.conf /etc/nginx/nginx.conf
+RUN chown root:root /etc/nginx/nginx.conf
+RUN chmod 666 /etc/nginx/nginx.conf
+
 COPY --from=ingress /etc/nginx/lua /etc/nginx/lua
 
 RUN mkdir -p /tmp/nginx /etc/ingress-controller /etc/ingress-controller/telemetry /etc/nginx/static
-COPY --from=ingress /etc/nginx/mime.types /etc/nginx/mime.types
+RUN cp /usr/local/openresty/nginx/conf/mime.types /etc/nginx/
 
 RUN chmod 1777 /tmp/nginx/ \
     /etc/nginx/ \
@@ -23,16 +28,6 @@ RUN chmod 1777 /tmp/nginx/ \
     /etc/ingress-controller/telemetry/ \
     /var/run/openresty/ \
     /etc/nginx/static/
-
-RUN addgroup -g 1001 nginx && \
-    adduser -u 1001 -G nginx -s /bin/sh -D nginx && \
-    chown -R nginx:nginx /tmp/nginx /etc/nginx /etc/ingress-controller /var/run/openresty
-
-RUN chmod 666 /etc/nginx/nginx.conf
-
-USER 1001
-
-ENTRYPOINT ["/nginx-ingress-controller", "--http-port=8080", "--https-port=8443"]
 
 COPY nginx.tmpl /etc/nginx/template/
 COPY src/banner.js /etc/nginx/static/
